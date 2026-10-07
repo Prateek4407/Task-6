@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Chat Test Client</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 640px; margin: 24px auto; padding: 0 16px; }
+  #setup, #chat { border: 1px solid #ccc; border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+  #chat { display: none; }
+  input, textarea { width: 100%; padding: 8px; margin: 4px 0 10px; box-sizing: border-box; }
+  button { padding: 8px 14px; cursor: pointer; }
+  #messages { list-style: none; padding: 0; height: 260px; overflow-y: auto; border: 1px solid #eee; margin: 10px 0; }
+  #messages li { padding: 6px 10px; border-bottom: 1px solid #f0f0f0; }
+  #messages li.system { color: #888; font-style: italic; font-size: 0.9em; }
+  #online { font-size: 0.9em; color: #555; }
+  #typing { font-size: 0.85em; color: #999; height: 18px; }
+</style>
+</head>
+<body>
+
+<div id="setup">
+  <h3>Connect</h3>
+  <label>JWT token</label>
+  <input id="token" placeholder="Paste a token from /auth/verify-otp" />
+  <label>Room name</label>
+  <input id="room" placeholder="general" />
+  <button id="connectBtn">Connect</button>
+  <p id="status"></p>
+</div>
+
+<div id="chat">
+  <h3>Room: <span id="roomLabel"></span></h3>
+  <p id="online">Online: </p>
+  <ul id="messages"></ul>
+  <p id="typing"></p>
+  <input id="messageInput" placeholder="Type a message and press Enter" />
+</div>
+
+<!-- Loaded from the running server itself: Socket.io serves this file
+     automatically at /socket.io/socket.io.js, matching whatever
+     version is installed server-side, so there's no version mismatch
+     to manage by hand. -->
+<script src="/socket.io/socket.io.js"></script>
+<script>
+  let socket;
+  let typingTimeout;
+
+  const statusEl = document.getElementById('status');
+  const messagesEl = document.getElementById('messages');
+  const onlineEl = document.getElementById('online');
+  const typingEl = document.getElementById('typing');
+  const roomLabelEl = document.getElementById('roomLabel');
+
+  function addLine(text, isSystem) {
+    const li = document.createElement('li');
+    li.textContent = text;
+    if (isSystem) li.className = 'system';
+    messagesEl.appendChild(li);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+  }
+
+  document.getElementById('connectBtn').addEventListener('click', () => {
+    const token = document.getElementById('token').value.trim();
+    const room = document.getElementById('room').value.trim() || 'general';
+
+    if (!token) {
+      statusEl.textContent = 'Paste a token first.';
+      return;
+    }
+
+    // The token travels in the handshake's `auth` payload — this is
+    // what socketAuth.js on the server reads as
+    // socket.handshake.auth.token. Never put it in a query string.
+    socket = io({ auth: { token } });
+
+    socket.on('connect', () => {
+      statusEl.textContent = 'Connected.';
+      document.getElementById('setup').style.display = 'none';
+      document.getElementById('chat').style.display = 'block';
+      roomLabelEl.textContent = room;
+      socket.emit('chat:join', { room });
+    });
+
+    socket.on('connect_error', (err) => {
+      // Fires if socketAuth.js rejected the handshake (missing/bad/
+      // expired token) — the connection never even completes.
+      statusEl.textContent = 'Connection rejected: ' + err.message;
+    });
+
+    socket.on('chat:system', (data) => addLine(data.message, true));
+    socket.on('chat:user-left', (data) => addLine(`${data.name} left the room.`, true));
+
+    socket.on('chat:message', (msg) => {
+      addLine(`${msg.senderName}: ${msg.text}`);
+    });
+
+    socket.on('chat:online-users', (users) => {
+      onlineEl.textContent = 'Online: ' + users.map((u) => u.name).join(', ');
+    });
+
+    socket.on('chat:typing', (data) => {
+      typingEl.textContent = data.isTyping ? `${data.name} is typing...` : '';
+    });
+
+    socket.on('chat:error', (err) => addLine('Error: ' + err.message, true));
+  });
+
+  document.getElementById('messageInput').addEventListener('keydown', (e) => {
+    if (!socket) return;
+
+    if (e.key === 'Enter' && e.target.value.trim()) {
+      socket.emit('chat:message', { text: e.target.value.trim() });
+      e.target.value = '';
+      socket.emit('chat:typing', { isTyping: false });
+      return;
+    }
+
+    // Lightweight typing indicator: tell the room "typing" on each
+    // keystroke, then automatically say "stopped" after a short pause
+    // of no further keystrokes.
+    socket.emit('chat:typing', { isTyping: true });
+    clearTimeout(typingTimeout);
+    typingTimeout = setTimeout(() => {
+      socket.emit('chat:typing', { isTyping: false });
+    }, 1500);
+  });
+</script>
+</body>
+</html>
